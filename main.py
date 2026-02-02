@@ -29,24 +29,18 @@ def get_bot_usd_rate():
         print(f"❌ 臺銀讀取失敗: {e}")
         return None
 
-# 3. 發送 Telegram 通知 (強力除錯版)
+# 3. 發送 Telegram 通知 (自動除錯修正版)
 def send_telegram_msg(message):
-    token = os.environ.get("TG_TOKEN")
-    chat_id = os.environ.get("TG_CHAT_ID")
+    # 【關鍵修正】加上 .strip() 自動刪除前後空白與換行
+    token = os.environ.get("TG_TOKEN", "").strip()
+    chat_id = os.environ.get("TG_CHAT_ID", "").strip()
     
-    # 檢查 Token 是否有讀取到 (隱藏中間內容)
-    if token:
-        print(f"🔍 檢查 Token: {token[:5]}...{token[-5:]} (長度: {len(token)})")
-    else:
-        print("❌ 嚴重錯誤：程式讀取不到 TG_TOKEN！")
-
-    if chat_id:
-        print(f"🔍 檢查 Chat ID: {chat_id}")
-    else:
-        print("❌ 嚴重錯誤：程式讀取不到 TG_CHAT_ID！")
-
     if not token or not chat_id:
+        print("❌ 錯誤：找不到 Token 或 Chat ID")
         return
+
+    # 印出來檢查修正後的長度 (應該會變回 46)
+    # print(f"🔍 修正後 Token 長度: {len(token)}") 
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -57,22 +51,16 @@ def send_telegram_msg(message):
     
     try:
         r = requests.post(url, json=payload, timeout=10)
-        
-        # 【關鍵修改】檢查回傳狀態碼
         if r.status_code == 200:
-            print("✅ Telegram 回應成功：訊息已送達！")
+            print("✅ Telegram 通知已發送成功！")
         else:
-            print("---------------------------------------")
-            print(f"❌ 發送失敗！HTTP 狀態碼: {r.status_code}")
-            print(f"❌ 錯誤原因: {r.text}")  # 這行會告訴我們真正的兇手
-            print("---------------------------------------")
-            
+            print(f"❌ 發送失敗 (HTTP {r.status_code}): {r.text}")
     except Exception as e:
         print(f"⚠️ 連線錯誤: {e}")
 
 # 主程式
 def monitor():
-    print("--- 開始執行診斷模式 ---")
+    print("--- 開始執行 (含自動修正) ---")
     max_p = get_max_usdt_price()
     bank_p = get_bot_usd_rate()
 
@@ -85,14 +73,19 @@ def monitor():
     
     print(f"MAX: {max_p}, 臺銀: {bank_p}, 價差: {diff:.2f}")
 
-    # 強制發送測試訊息，不管溢價多少
-    print("🚀 嘗試發送測試訊息...")
-    msg = (
-        f"🛠 <b>連線測試</b> 🛠\n"
-        f"看到這則訊息代表設定成功！\n"
-        f"目前溢價: {diff:.2f}"
-    )
-    send_telegram_msg(msg)
+    # 設定門檻
+    THRESHOLD = 0.15 
+
+    if diff >= THRESHOLD:
+        msg = (
+            f"🚨 <b>USDT 搬磚機會 (即期)</b> 🚨\n\n"
+            f"💎 <b>MAX:</b> {max_p}\n"
+            f"🏦 <b>臺銀即期:</b> {bank_p}\n"
+            f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
+        )
+        send_telegram_msg(msg)
+    else:
+        print(f"未達 {THRESHOLD} 門檻，不通知")
 
 if __name__ == "__main__":
     monitor()
