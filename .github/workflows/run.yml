@@ -21,7 +21,7 @@ jobs:
           python-version: '3.9'
 
       - name: Install dependencies
-        run: pip install requests pandas yfinance
+        run: pip install requests pandas lxml
 
       - name: Run Monitor Script
         env:
