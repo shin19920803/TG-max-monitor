@@ -2,10 +2,12 @@ name: Monitor USDT Premium
 
 on:
   schedule:
-    # 每 15 分鐘執行一次
-    - cron: '*/15 * * * *'
-  # 允許手動執行
+    # 改成每 5 分鐘執行一次 (GitHub 最快極限)
+    - cron: '*/5 * * * *'
   workflow_dispatch:
+
+permissions:
+  contents: write  # 給予寫入權限 (重要)
 
 jobs:
   check-price:
@@ -25,7 +27,19 @@ jobs:
 
       - name: Run Monitor Script
         env:
-          # 將 GitHub Secrets 注入到環境變數
           TG_TOKEN: ${{ secrets.TG_TOKEN }}
           TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
         run: python main.py
+
+      # 新增步驟：把 main.py 產生的 last_state.txt 存回 GitHub
+      - name: Commit and Push changes
+        run: |
+          git config --global user.name "GitHub Actions"
+          git config --global user.email "actions@github.com"
+          
+          # 如果有產生 last_state.txt 檔案，才進行上傳
+          if [ -f last_state.txt ]; then
+            git add last_state.txt
+            git commit -m "Update last price state" || echo "No changes to commit"
+            git push
+          fi
