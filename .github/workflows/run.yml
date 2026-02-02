@@ -1,0 +1,31 @@
+name: Monitor USDT Premium
+
+on:
+  schedule:
+    # 每 15 分鐘執行一次
+    - cron: '*/15 * * * *'
+  # 允許手動執行
+  workflow_dispatch:
+
+jobs:
+  check-price:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.9'
+
+      - name: Install dependencies
+        run: pip install requests pandas
+
+      - name: Run Monitor Script
+        env:
+          # 將 GitHub Secrets 注入到環境變數
+          TG_TOKEN: ${{ secrets.TG_TOKEN }}
+          TG_CHAT_ID: ${{ secrets.TG_CHAT_ID }}
+        run: python main.py
