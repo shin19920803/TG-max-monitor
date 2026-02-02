@@ -1,14 +1,13 @@
 import requests
-import pandas as pd
+import yfinance as yf # 引入 Yahoo 財經工具
 import os
-import io
 
-# 1. 取得 MAX 交易所 USDT 價格 (V2 API)
+# 1. 取得 MAX 交易所 USDT 價格
 def get_max_usdt_price():
     try:
         url = "https://max-api.maicoin.com/api/v2/tickers/usdttwd"
         headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+            "User-Agent": "Mozilla/5.0"
         }
         res = requests.get(url, headers=headers, timeout=10)
         data = res.json()
@@ -17,41 +16,25 @@ def get_max_usdt_price():
         print(f"❌ MAX 讀取失敗: {e}")
         return None
 
-# 2. 取得臺灣銀行美金現金賣出價 (萬能解碼版)
-def get_bot_usd_rate():
+# 2. 取得 美金匯率 (Yahoo Finance / 類似 Google 匯率)
+def get_usd_rate():
     try:
-        csv_url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
+        # 抓取 USDTWD=X (美金兌台幣匯率)
+        # period="1d" 代表抓取最近一天的資料
+        ticker = yf.Ticker("USDTWD=X")
+        data = ticker.history(period="1d")
         
-        # 先把檔案內容抓下來 (變成二進位資料)
-        res = requests.get(csv_url, timeout=10)
-        
-        # --- 萬能解碼邏輯開始 ---
-        try:
-            # 第一招：嘗試用 UTF-8 解碼
-            decoded_content = res.content.decode('utf-8')
-        except UnicodeDecodeError:
-            # 第二招：如果失敗，改用 CP950 (Big5) 解碼
-            print("⚠️ UTF-8 解碼失敗，切換為 CP950...")
-            decoded_content = res.content.decode('cp950')
-        # -----------------------
-
-        # 將文字轉換成 Pandas 可以讀取的虛擬檔案
-        df = pd.read_csv(io.StringIO(decoded_content))
-        
-        # 找出包含 "USD" 的那一行
-        # 抓取第 0 欄 (幣別)
-        usd_row = df[df.iloc[:, 0].str.contains('USD', na=False)]
-        
-        if usd_row.empty:
-            print("❌ 找不到 USD 資料")
+        if data.empty:
+            print("❌ Yahoo Finance 抓不到資料")
             return None
             
-        # 根據臺銀格式：第 2 欄是現金賣出
-        cash_sell_rate = usd_row.iloc[0, 2]
+        # 取得最新的收盤價 (Close)
+        rate = data['Close'].iloc[-1]
         
-        return float(cash_sell_rate)
+        # 四捨五入到小數點第二位
+        return round(float(rate), 2)
     except Exception as e:
-        print(f"❌ 臺銀讀取失敗: {e}")
+        print(f"❌ 匯率讀取失敗: {e}")
         return None
 
 # 3. 發送 Telegram 通知
@@ -77,30 +60,33 @@ def send_telegram_msg(message):
 
 # 主程式
 def monitor():
-    print("--- 開始執行監控 ---")
+    print("--- 開始執行監控 (Yahoo版) ---")
     max_p = get_max_usdt_price()
-    bot_p = get_bot_usd_rate()
+    usd_p = get_usd_rate()
 
-    if max_p is None or bot_p is None:
+    if max_p is None or usd_p is None:
         print("數據不足，跳過")
         return
 
-    diff = max_p - bot_p
-    rate = (diff / bot_p) * 100
+    diff = max_p - usd_p
+    rate = (diff / usd_p) * 100
     
-    print(f"MAX: {max_p}, 臺銀: {bot_p}, 價差: {diff:.2f}")
+    print(f"MAX: {max_p}, USD匯率: {usd_p}, 價差: {diff:.2f}")
 
-    # 判斷溢價是否 >= 0.2
-    if diff >= 0.2:
+    # 判斷溢價 (建議門檻稍微調高，因為 Yahoo 匯率通常比銀行賣出價低)
+    # 這裡我先幫你設成 0.3，你可以自己改回 0.2
+    THRESHOLD = 0.3 
+
+    if diff >= THRESHOLD:
         msg = (
             f"🚨 <b>USDT 搬磚機會</b> 🚨\n\n"
             f"💎 <b>MAX:</b> {max_p}\n"
-            f"🏦 <b>臺銀:</b> {bot_p}\n"
+            f"🇺🇸 <b>美金:</b> {usd_p} (Yahoo)\n"
             f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
         )
         send_telegram_msg(msg)
     else:
-        print("未達 0.2 門檻，不通知")
+        print(f"未達 {THRESHOLD} 門檻，不通知")
 
 if __name__ == "__main__":
     monitor()
