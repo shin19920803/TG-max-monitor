@@ -2,63 +2,45 @@ import requests
 import pandas as pd
 import os
 
-# 1. 取得 MAX 交易所 USDT 價格 (修正為 V2 API)
+# 1. 取得 MAX 交易所 USDT 價格 (使用 V2 API)
 def get_max_usdt_price():
     try:
-        # 改用 v2 版本，這是目前最穩定的公開接口
         url = "https://max-api.maicoin.com/api/v2/tickers/usdttwd"
-        
-        # 設定 headers 避免被誤判為機器人
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
         }
-        
         res = requests.get(url, headers=headers, timeout=10)
-        
-        # 檢查是否成功 (狀態碼 200)
-        if res.status_code != 200:
-            print(f"❌ MAX 回應錯誤: {res.status_code}, 內容: {res.text[:50]}")
-            return None
-            
         data = res.json()
-        
-        # 確保 'last' 欄位存在
-        if 'last' not in data:
-            print(f"❌ MAX 數據格式異常 (找不到 last): {data.keys()}")
-            return None
-            
         return float(data['last'])
     except Exception as e:
-        print(f"❌ 讀取 MAX 失敗: {e}")
+        print(f"❌ MAX 讀取失敗: {e}")
         return None
 
-# 2. 取得臺灣銀行美金現金賣出價 (修正為位置鎖定法)
+# 2. 取得臺灣銀行美金現金賣出價 (修正編碼問題)
 def get_bot_usd_rate():
     try:
         csv_url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
         
-        # 讀取 CSV，指定編碼 utf-8，並將第一欄當作索引
-        df = pd.read_csv(csv_url, encoding='utf-8')
+        # 【關鍵修正】加上 encoding='cp950' 讓它能讀懂繁體中文
+        # 並且指定 header=0 確保正確讀取標題
+        df = pd.read_csv(csv_url, encoding='cp950')
         
-        # 找到幣別是 USD 的那一行
-        # 臺銀 CSV 的幣別欄位通常在第 0 欄，且格式為 "USD 美金" 或 "USD"
-        # 我們直接用字串包含來篩選
+        # 為了保險起見，我們不依賴欄位名稱 (怕它改版)，我們直接抓「位置」
+        # 第 0 欄通常是幣別 (例如: "USD  美金")
+        # 找出包含 "USD" 的那一行
         usd_row = df[df.iloc[:, 0].str.contains('USD', na=False)]
         
         if usd_row.empty:
-            print("❌ 找不到 USD 幣別資料")
+            print(f"❌ 在表中找不到 USD 資料。讀到的前幾筆幣別: {df.iloc[:3, 0].values}")
             return None
             
-        # 【關鍵修正】
-        # 不要用欄位名稱找，改用「位置 (iloc)」找
-        # 根據臺銀格式：第 0 欄=幣別, 第 1 欄=現金買入, 第 2 欄=現金賣出
+        # 根據臺銀 CSV 格式：第 2 欄 (索引 2) 是「本行現金賣出」
+        # (第0欄=幣別, 第1欄=現金買入, 第2欄=現金賣出)
         cash_sell_rate = usd_row.iloc[0, 2]
         
         return float(cash_sell_rate)
     except Exception as e:
-        print(f"❌ 讀取臺銀失敗: {e}")
-        # 印出欄位名稱幫助除錯
-        # print(f"DEBUG - 欄位列表: {df.columns.tolist() if 'df' in locals() else '讀取失敗'}")
+        print(f"❌ 臺銀讀取失敗: {e}")
         return None
 
 # 3. 發送 Telegram 通知
@@ -67,7 +49,7 @@ def send_telegram_msg(message):
     chat_id = os.environ.get("TG_CHAT_ID")
     
     if not token or not chat_id:
-        print("⚠️ 錯誤：找不到 Telegram 設定 (Secrets)")
+        print("⚠️ 錯誤：找不到 Telegram 設定")
         return
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
@@ -76,45 +58,38 @@ def send_telegram_msg(message):
         "text": message,
         "parse_mode": "HTML"
     }
-    
     try:
-        r = requests.post(url, json=payload, timeout=10)
-        if r.status_code == 200:
-            print("✅ 通知發送成功")
-        else:
-            print(f"⚠️ 發送失敗: {r.text}")
+        requests.post(url, json=payload, timeout=10)
+        print("✅ 通知已發送")
     except Exception as e:
-        print(f"⚠️ 連線錯誤: {e}")
+        print(f"⚠️ 發送失敗: {e}")
 
-# 主邏輯
+# 主程式
 def monitor():
     print("--- 開始執行監控 ---")
-    max_price = get_max_usdt_price()
-    bank_price = get_bot_usd_rate()
+    max_p = get_max_usdt_price()
+    bot_p = get_bot_usd_rate()
 
-    if max_price is None or bank_price is None:
-        print("數據不足，結束程式")
+    if max_p is None or bot_p is None:
+        print("數據不足，跳過本次執行")
         return
 
-    # 計算溢價
-    diff = max_price - bank_price
-    rate = (diff / bank_price) * 100
+    diff = max_p - bot_p
+    rate = (diff / bot_p) * 100
+    
+    print(f"MAX: {max_p}, 臺銀: {bot_p}, 價差: {diff:.2f}")
 
-    print(f"MAX: {max_price}, Bank: {bank_price}, Diff: {diff:.2f}")
-
-    # 判斷是否發送通知 (溢價 >= 0.2)
+    # 判斷溢價是否 >= 0.2
     if diff >= 0.2:
         msg = (
-            f"🚨 <b>USDT 搬磚機會出現</b> 🚨\n\n"
-            f"💎 <b>MAX 價格:</b> {max_price} TWD\n"
-            f"🏦 <b>臺銀現金:</b> {bank_price} TWD\n"
-            f"--------------------------\n"
-            f"💰 <b>溢價金額:</b> {diff:.2f} 元\n"
-            f"📈 <b>溢價幅度:</b> {rate:.2f}%"
+            f"🚨 <b>USDT 搬磚機會</b> 🚨\n\n"
+            f"💎 <b>MAX:</b> {max_p}\n"
+            f"🏦 <b>臺銀:</b> {bot_p}\n"
+            f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
         )
         send_telegram_msg(msg)
     else:
-        print(f"目前溢價僅 {diff:.2f}，未達 0.2 門檻，不打擾。")
+        print("未達 0.2 門檻，不通知")
 
 if __name__ == "__main__":
     monitor()
