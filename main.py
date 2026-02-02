@@ -1,8 +1,9 @@
 import requests
 import pandas as pd
 import os
+import io
 
-# 1. 取得 MAX 交易所 USDT 價格 (使用 V2 API)
+# 1. 取得 MAX 交易所 USDT 價格 (V2 API)
 def get_max_usdt_price():
     try:
         url = "https://max-api.maicoin.com/api/v2/tickers/usdttwd"
@@ -16,26 +17,36 @@ def get_max_usdt_price():
         print(f"❌ MAX 讀取失敗: {e}")
         return None
 
-# 2. 取得臺灣銀行美金現金賣出價 (修正編碼問題)
+# 2. 取得臺灣銀行美金現金賣出價 (萬能解碼版)
 def get_bot_usd_rate():
     try:
         csv_url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
         
-        # 【關鍵修正】加上 encoding='cp950' 讓它能讀懂繁體中文
-        # 並且指定 header=0 確保正確讀取標題
-        df = pd.read_csv(csv_url, encoding='cp950')
+        # 先把檔案內容抓下來 (變成二進位資料)
+        res = requests.get(csv_url, timeout=10)
         
-        # 為了保險起見，我們不依賴欄位名稱 (怕它改版)，我們直接抓「位置」
-        # 第 0 欄通常是幣別 (例如: "USD  美金")
+        # --- 萬能解碼邏輯開始 ---
+        try:
+            # 第一招：嘗試用 UTF-8 解碼
+            decoded_content = res.content.decode('utf-8')
+        except UnicodeDecodeError:
+            # 第二招：如果失敗，改用 CP950 (Big5) 解碼
+            print("⚠️ UTF-8 解碼失敗，切換為 CP950...")
+            decoded_content = res.content.decode('cp950')
+        # -----------------------
+
+        # 將文字轉換成 Pandas 可以讀取的虛擬檔案
+        df = pd.read_csv(io.StringIO(decoded_content))
+        
         # 找出包含 "USD" 的那一行
+        # 抓取第 0 欄 (幣別)
         usd_row = df[df.iloc[:, 0].str.contains('USD', na=False)]
         
         if usd_row.empty:
-            print(f"❌ 在表中找不到 USD 資料。讀到的前幾筆幣別: {df.iloc[:3, 0].values}")
+            print("❌ 找不到 USD 資料")
             return None
             
-        # 根據臺銀 CSV 格式：第 2 欄 (索引 2) 是「本行現金賣出」
-        # (第0欄=幣別, 第1欄=現金買入, 第2欄=現金賣出)
+        # 根據臺銀格式：第 2 欄是現金賣出
         cash_sell_rate = usd_row.iloc[0, 2]
         
         return float(cash_sell_rate)
@@ -71,7 +82,7 @@ def monitor():
     bot_p = get_bot_usd_rate()
 
     if max_p is None or bot_p is None:
-        print("數據不足，跳過本次執行")
+        print("數據不足，跳過")
         return
 
     diff = max_p - bot_p
