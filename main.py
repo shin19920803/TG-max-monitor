@@ -2,32 +2,63 @@ import requests
 import pandas as pd
 import os
 
-# 1. 取得 MAX 交易所 USDT 價格
+# 1. 取得 MAX 交易所 USDT 價格 (修正為 V2 API)
 def get_max_usdt_price():
     try:
-        url = "https://max-api.maicoin.com/api/v3/public/tickers/usdttwd"
-        # 設定 timeout 避免卡死
-        res = requests.get(url, timeout=10).json()
-        return float(res['last'])
+        # 改用 v2 版本，這是目前最穩定的公開接口
+        url = "https://max-api.maicoin.com/api/v2/tickers/usdttwd"
+        
+        # 設定 headers 避免被誤判為機器人
+        headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        }
+        
+        res = requests.get(url, headers=headers, timeout=10)
+        
+        # 檢查是否成功 (狀態碼 200)
+        if res.status_code != 200:
+            print(f"❌ MAX 回應錯誤: {res.status_code}, 內容: {res.text[:50]}")
+            return None
+            
+        data = res.json()
+        
+        # 確保 'last' 欄位存在
+        if 'last' not in data:
+            print(f"❌ MAX 數據格式異常 (找不到 last): {data.keys()}")
+            return None
+            
+        return float(data['last'])
     except Exception as e:
         print(f"❌ 讀取 MAX 失敗: {e}")
         return None
 
-# 2. 取得臺灣銀行美金現金賣出價
+# 2. 取得臺灣銀行美金現金賣出價 (修正為位置鎖定法)
 def get_bot_usd_rate():
     try:
-        # 臺銀 CSV 下載點
         csv_url = "https://rate.bot.com.tw/xrt/flcsv/0/day"
-        df = pd.read_csv(csv_url)
         
-        # 篩選幣別為 USD
-        usd_row = df[df['幣別'] == 'USD']
+        # 讀取 CSV，指定編碼 utf-8，並將第一欄當作索引
+        df = pd.read_csv(csv_url, encoding='utf-8')
         
-        # 取得「本行現金賣出」欄位
-        cash_sell_rate = usd_row['本行現金賣出'].values[0]
+        # 找到幣別是 USD 的那一行
+        # 臺銀 CSV 的幣別欄位通常在第 0 欄，且格式為 "USD 美金" 或 "USD"
+        # 我們直接用字串包含來篩選
+        usd_row = df[df.iloc[:, 0].str.contains('USD', na=False)]
+        
+        if usd_row.empty:
+            print("❌ 找不到 USD 幣別資料")
+            return None
+            
+        # 【關鍵修正】
+        # 不要用欄位名稱找，改用「位置 (iloc)」找
+        # 根據臺銀格式：第 0 欄=幣別, 第 1 欄=現金買入, 第 2 欄=現金賣出
+        cash_sell_rate = usd_row.iloc[0, 2]
+        
         return float(cash_sell_rate)
     except Exception as e:
         print(f"❌ 讀取臺銀失敗: {e}")
+        # 印出欄位名稱幫助除錯
+        # print(f"DEBUG - 欄位列表: {df.columns.tolist() if 'df' in locals() else '讀取失敗'}")
         return None
 
 # 3. 發送 Telegram 通知
@@ -43,7 +74,7 @@ def send_telegram_msg(message):
     payload = {
         "chat_id": chat_id,
         "text": message,
-        "parse_mode": "HTML" # 支援 HTML 格式 (粗體等)
+        "parse_mode": "HTML"
     }
     
     try:
@@ -73,7 +104,6 @@ def monitor():
 
     # 判斷是否發送通知 (溢價 >= 0.2)
     if diff >= 0.2:
-        # 使用 HTML 語法美化訊息
         msg = (
             f"🚨 <b>USDT 搬磚機會出現</b> 🚨\n\n"
             f"💎 <b>MAX 價格:</b> {max_price} TWD\n"
