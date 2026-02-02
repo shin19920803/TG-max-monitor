@@ -1,5 +1,5 @@
 import requests
-import yfinance as yf
+import pandas as pd
 import os
 
 # 1. 取得 MAX 交易所 USDT 價格
@@ -16,21 +16,41 @@ def get_max_usdt_price():
         print(f"❌ MAX 讀取失敗: {e}")
         return None
 
-# 2. 取得 美金匯率 (Yahoo Finance)
-def get_usd_rate():
+# 2. 取得 臺灣銀行 現金賣出匯率 (HTML 表格讀取法)
+def get_bot_usd_rate():
     try:
-        # 抓取 USDTWD=X (美金兌台幣)
-        ticker = yf.Ticker("USDTWD=X")
-        data = ticker.history(period="1d")
+        url = "https://rate.bot.com.tw/xrt?Lang=zh-TW"
         
-        if data.empty:
-            print("❌ Yahoo Finance 抓不到資料")
+        # 使用 pandas 直接讀取網頁中的表格
+        #這會回傳一個列表，通常匯率表是第一個 [0]
+        dfs = pd.read_html(url)
+        df = dfs[0]
+        
+        # 整理欄位：我們只需要前幾欄
+        # 臺銀網頁表格格式：
+        # 第0欄: 幣別 (Currency)
+        # 第1欄: 現金買入
+        # 第2欄: 現金賣出 (這是我們要的)
+        
+        # 複製一份以免跳出警告
+        df = df.iloc[:, [0, 2]].copy()
+        
+        # 設定欄位名稱方便操作
+        df.columns = ["Currency", "Cash_Sell"]
+        
+        # 找到包含 "USD" 或 "美金" 的那一行
+        usd_row = df[df["Currency"].str.contains("USD|美金", na=False)]
+        
+        if usd_row.empty:
+            print("❌ 抓不到美金資料")
             return None
             
-        rate = data['Close'].iloc[-1]
-        return round(float(rate), 2)
+        # 取得匯率數值
+        rate = usd_row.iloc[0]["Cash_Sell"]
+        return float(rate)
+        
     except Exception as e:
-        print(f"❌ 匯率讀取失敗: {e}")
+        print(f"❌ 臺銀網頁讀取失敗: {e}")
         return None
 
 # 3. 發送 Telegram 通知
@@ -56,27 +76,27 @@ def send_telegram_msg(message):
 
 # 主程式
 def monitor():
-    print("--- 開始執行監控 (Yahoo版) ---")
+    print("--- 開始執行監控 (臺銀網頁版) ---")
     max_p = get_max_usdt_price()
-    usd_p = get_usd_rate()
+    bank_p = get_bot_usd_rate()
 
-    if max_p is None or usd_p is None:
+    if max_p is None or bank_p is None:
         print("數據不足，跳過")
         return
 
-    diff = max_p - usd_p
-    rate = (diff / usd_p) * 100
+    diff = max_p - bank_p
+    rate = (diff / bank_p) * 100
     
-    print(f"MAX: {max_p}, USD匯率: {usd_p}, 價差: {diff:.2f}")
+    print(f"MAX: {max_p}, 臺銀: {bank_p}, 價差: {diff:.2f}")
 
-    # --- 修改重點：將門檻改為 0.15 ---
+    # 設定通知門檻 (價差 0.15)
     THRESHOLD = 0.15 
 
     if diff >= THRESHOLD:
         msg = (
             f"🚨 <b>USDT 搬磚機會</b> 🚨\n\n"
             f"💎 <b>MAX:</b> {max_p}\n"
-            f"🇺🇸 <b>美金:</b> {usd_p} (Yahoo)\n"
+            f"🏦 <b>臺銀:</b> {bank_p}\n"
             f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
         )
         send_telegram_msg(msg)
