@@ -20,7 +20,6 @@ def get_bot_usd_rate():
         url = "https://rate.bot.com.tw/xrt?Lang=zh-TW"
         dfs = pd.read_html(url)
         df = dfs[0]
-        # 抓取第 0 欄(幣別) 和 第 4 欄(即期賣出)
         df = df.iloc[:, [0, 4]].copy()
         df.columns = ["Currency", "Spot_Sell"]
         usd_row = df[df["Currency"].str.contains("USD|美金", na=False)]
@@ -30,15 +29,18 @@ def get_bot_usd_rate():
         print(f"❌ 臺銀讀取失敗: {e}")
         return None
 
-# 3. 發送 Telegram 通知 (含除錯功能)
+# 3. 發送 Telegram 通知 (強力清洗版)
 def send_telegram_msg(message):
-    # 自動清除前後空白，避免複製錯誤
-    token = os.environ.get("TG_TOKEN", "").strip()
-    chat_id = os.environ.get("TG_CHAT_ID", "").strip()
+    # 【最終修正】使用 replace(" ", "") 把中間的空白也刪掉！
+    token = os.environ.get("TG_TOKEN", "").replace(" ", "").replace("\n", "").strip()
+    chat_id = os.environ.get("TG_CHAT_ID", "").replace(" ", "").replace("\n", "").strip()
     
     if not token or not chat_id:
         print("❌ 錯誤：找不到 Token 或 Chat ID")
         return
+        
+    # 印出前幾碼確認 (不印全部以保安全)
+    # print(f"🔍 使用 Token: {token[:5]}... (長度: {len(token)})")
 
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     payload = {
@@ -58,7 +60,7 @@ def send_telegram_msg(message):
 
 # 主程式
 def monitor():
-    print("--- 開始執行監控 (門檻 0.1) ---")
+    print("--- 開始執行監控 (門檻 0.1 / 強力清洗版) ---")
     max_p = get_max_usdt_price()
     bank_p = get_bot_usd_rate()
 
@@ -71,7 +73,7 @@ def monitor():
     
     print(f"MAX: {max_p}, 臺銀即期: {bank_p}, 價差: {diff:.2f}")
 
-    # 【修改重點】將門檻改為 0.1
+    # 門檻 0.1
     THRESHOLD = 0.1
 
     if diff >= THRESHOLD:
