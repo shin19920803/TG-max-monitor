@@ -1,5 +1,5 @@
 import requests
-import yfinance as yf # 引入 Yahoo 財經工具
+import yfinance as yf
 import os
 
 # 1. 取得 MAX 交易所 USDT 價格
@@ -16,11 +16,10 @@ def get_max_usdt_price():
         print(f"❌ MAX 讀取失敗: {e}")
         return None
 
-# 2. 取得 美金匯率 (Yahoo Finance / 類似 Google 匯率)
+# 2. 取得 美金匯率 (Yahoo Finance)
 def get_usd_rate():
     try:
-        # 抓取 USDTWD=X (美金兌台幣匯率)
-        # period="1d" 代表抓取最近一天的資料
+        # 抓取 USDTWD=X (美金兌台幣)
         ticker = yf.Ticker("USDTWD=X")
         data = ticker.history(period="1d")
         
@@ -28,10 +27,7 @@ def get_usd_rate():
             print("❌ Yahoo Finance 抓不到資料")
             return None
             
-        # 取得最新的收盤價 (Close)
         rate = data['Close'].iloc[-1]
-        
-        # 四捨五入到小數點第二位
         return round(float(rate), 2)
     except Exception as e:
         print(f"❌ 匯率讀取失敗: {e}")
@@ -73,9 +69,8 @@ def monitor():
     
     print(f"MAX: {max_p}, USD匯率: {usd_p}, 價差: {diff:.2f}")
 
-    # 判斷溢價 (建議門檻稍微調高，因為 Yahoo 匯率通常比銀行賣出價低)
-    # 這裡我先幫你設成 0.3，你可以自己改回 0.2
-    THRESHOLD = 0.3 
+    # --- 修改重點：將門檻改為 0.15 ---
+    THRESHOLD = 0.15 
 
     if diff >= THRESHOLD:
         msg = (
