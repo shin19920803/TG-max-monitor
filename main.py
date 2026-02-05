@@ -15,7 +15,8 @@ USDT_CHANGE_THRESHOLD = 0     # USDT 變動通知門檻
 USDT_STATE_FILE = "last_state.txt"
 
 # 2. BTC 監控設定
-BTC_DROP_THRESHOLD = 0.02     # 暴跌門檻 (2%)
+# 【修改這裡】改成 0.01 (代表 1%)
+BTC_DROP_THRESHOLD = 0.01     
 BTC_TIME_WINDOW = 3600        # 時間窗口 (1小時)
 BTC_HISTORY_FILE = "btc_history.json"
 
@@ -118,12 +119,12 @@ def monitor_usdt():
     send_telegram_msg(msg)
 
 # ===========================
-# 📉 功能 2: BTC/USDT 暴跌監控
+# 📉 功能 2: BTC/USDT 暴跌監控 (1%)
 # ===========================
 
 def get_btc_price():
     try:
-        # 改成抓取 BTC/USDT 交易對
+        # 抓取 BTC/USDT 交易對
         url = "https://max-api.maicoin.com/api/v2/tickers/btcusdt" 
         headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers, timeout=10)
@@ -134,9 +135,8 @@ def get_btc_price():
         return None
 
 def monitor_btc():
-    print("\n--- [2] 執行 BTC/USDT 暴跌監控 ---")
+    print("\n--- [2] 執行 BTC/USDT 暴跌監控 (門檻 1%) ---")
     
-    # 顯示現在時間，確認不是讀到舊資料
     current_time_str = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
     print(f"執行時間 (台灣): {current_time_str}")
 
@@ -147,7 +147,7 @@ def monitor_btc():
     now = time.time()
     history = []
 
-    # 1. 讀取歷史價格 (如果讀不到，代表存檔失敗)
+    # 1. 讀取歷史價格
     if os.path.exists(BTC_HISTORY_FILE):
         try:
             with open(BTC_HISTORY_FILE, "r") as f:
@@ -184,7 +184,7 @@ def monitor_btc():
     # 6. 觸發通知
     if drop_rate >= BTC_DROP_THRESHOLD:
         msg = (
-            f"📉 <b>BTC/USDT 發生暴跌</b> 📉\n\n"
+            f"📉 <b>BTC/USDT 急跌警報</b> 📉\n\n"
             f"🔻 <b>1H內跌幅:</b> {drop_rate*100:.2f}%\n"
             f"💵 <b>目前價格:</b> {current_price:,.2f} USDT\n"
             f"🏔 <b>1H內最高:</b> {max_price_1h:,.2f} USDT\n"
