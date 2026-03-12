@@ -11,10 +11,10 @@ from datetime import datetime, timedelta
 # ===========================
 
 # 1. USDT 監控設定
-USDT_THRESHOLD = 0.2          # 溢價門檻
-USDT_CHANGE_THRESHOLD = 0     # 變動通知門檻
+USDT_THRESHOLD = 0.2          
+USDT_CHANGE_THRESHOLD = 0     
 USDT_STATE_FILE = "last_state.txt"
-BANK_SPREAD_FIX = 0.12        # Yahoo中間價 + 0.12 = 預估銀行賣出價
+BANK_SPREAD_FIX = 0.05        # Yahoo 中間價推算銀行買賣價的微調值
 
 # 2. BTC 監控設定 (1%)
 BTC_DROP_THRESHOLD = 0.01     
@@ -47,7 +47,7 @@ def send_telegram_msg(message):
         print(f"⚠️ 發送失敗: {e}")
 
 # ===========================
-# 💰 功能 1: USDT 搬磚監控 (含週末判斷)
+# 💰 功能 1: USDT 搬磚監控 (基準：即期買入)
 # ===========================
 
 def get_max_usdt_price():
@@ -66,18 +66,20 @@ def get_bot_usd_rate():
         url = "https://rate.bot.com.tw/xrt?Lang=zh-TW"
         dfs = pd.read_html(url)
         df = dfs[0]
-        df = df.iloc[:, [0, 4]].copy()
-        df.columns = ["Currency", "Spot_Sell"]
+        # 台銀欄位: 0=幣別, 1=現金買入, 2=現金賣出, 3=即期買入, 4=即期賣出
+        df = df.iloc[:, [0, 3, 4]].copy()
+        df.columns = ["Currency", "Spot_Buy", "Spot_Sell"]
         usd_row = df[df["Currency"].str.contains("USD|美金", na=False)]
-        if usd_row.empty: return None
-        return float(usd_row.iloc[0]["Spot_Sell"])
+        if usd_row.empty: return None, None
+        
+        # 【修改點】改為回傳 (買入價, 賣出價)
+        return float(usd_row.iloc[0]["Spot_Buy"]), float(usd_row.iloc[0]["Spot_Sell"])
     except Exception as e:
         print(f"⚠️ 台銀讀取失敗: {e}")
-        return None
+        return None, None
 
 def get_yahoo_usd_rate():
     try:
-        # TWD=X 代表 USD/TWD 匯率
         ticker = yf.Ticker("TWD=X")
         data = ticker.history(period="1d", interval="1m")
         if data.empty:
@@ -85,54 +87,54 @@ def get_yahoo_usd_rate():
         
         last_price = data['Close'].iloc[-1]
         
-        # 加上預估的銀行點差
-        estimated_bank_sell = last_price + BANK_SPREAD_FIX
-        return estimated_bank_sell, last_price
+        # 估算銀行買入價 (銀行買入通常略低於國際中間價)
+        estimated_bank_buy = last_price - BANK_SPREAD_FIX
+        estimated_bank_sell = last_price + BANK_SPREAD_FIX 
+        return estimated_bank_buy, estimated_bank_sell, last_price
     except Exception as e:
         print(f"❌ Yahoo 財經讀取失敗: {e}")
-        return None, None
+        return None, None, None
 
 def monitor_usdt():
-    print("--- [1] 執行 USDT 監控 (週末智慧版) ---")
+    print("--- [1] 執行 USDT 監控 (以即期買入為基準) ---")
     
-    # 1. 判斷今天是不是週末 (台灣時間)
     tw_time = datetime.utcnow() + timedelta(hours=8)
-    weekday = tw_time.weekday() # 0=週一 ... 5=週六, 6=週日
+    weekday = tw_time.weekday() 
     
     max_p = get_max_usdt_price()
-    bank_p = None
+    bank_buy = None
+    bank_sell = None
     source_name = ""
 
-    # 2. 決定要抓哪裡的匯率
-    if weekday >= 5: # 如果是週六(5) 或 週日(6)
-        print(f"📅 檢測到今天是週末 (星期{weekday+1})，強制切換至 Yahoo 財經...")
-        estimated_p, raw_p = get_yahoo_usd_rate()
-        if estimated_p:
-            bank_p = estimated_p
-            source_name = f"Yahoo估算 (原{raw_p:.2f}+{BANK_SPREAD_FIX})"
+    if weekday >= 5: 
+        print(f"📅 檢測到今天是週末，強制切換至 Yahoo 財經推算...")
+        est_buy, est_sell, raw_p = get_yahoo_usd_rate()
+        if est_buy:
+            bank_buy, bank_sell = est_buy, est_sell
+            source_name = "Yahoo估算"
     else:
-        # 平日優先抓台銀
-        bank_p = get_bot_usd_rate()
-        source_name = "臺銀即期"
-        
-        # 如果平日台銀掛掉，也備援用 Yahoo
-        if bank_p is None:
+        # 平日：接收台銀的回傳值 (買入價, 賣出價)
+        res = get_bot_usd_rate()
+        if res and res[0] is not None:
+            bank_buy, bank_sell = res
+            source_name = "臺銀即期"
+        else:
             print("⚠️ 台銀讀取失敗，轉用 Yahoo...")
-            estimated_p, raw_p = get_yahoo_usd_rate()
-            if estimated_p:
-                bank_p = estimated_p
-                source_name = f"Yahoo估算 (原{raw_p:.2f}+{BANK_SPREAD_FIX})"
+            est_buy, est_sell, raw_p = get_yahoo_usd_rate()
+            if est_buy:
+                bank_buy, bank_sell = est_buy, est_sell
+                source_name = "Yahoo估算"
 
-    if max_p is None or bank_p is None:
+    if max_p is None or bank_buy is None:
         print("❌ 數據不足，跳過本次監控")
         return
 
-    diff = max_p - bank_p
-    rate = (diff / bank_p) * 100
+    # 【關鍵修改】價差計算改用「銀行買入價」當作成本基準
+    diff = max_p - bank_buy
+    rate = (diff / bank_buy) * 100
     
-    print(f"MAX: {max_p}, 成本基準: {bank_p:.2f} ({source_name}), 價差: {diff:.2f}")
+    print(f"MAX: {max_p}, 買入基準: {bank_buy:.2f} ({source_name}), 價差: {diff:.2f}")
 
-    # 讀取與儲存狀態
     last_diff = 0.0
     if os.path.exists(USDT_STATE_FILE):
         try:
@@ -144,7 +146,6 @@ def monitor_usdt():
     with open(USDT_STATE_FILE, "w") as f:
         f.write(str(diff))
 
-    # 判斷通知
     if diff < USDT_THRESHOLD:
         print(f"未達 {USDT_THRESHOLD} 門檻")
         return
@@ -155,9 +156,10 @@ def monitor_usdt():
         return
 
     msg = (
-        f"🚨 <b>USDT 搬磚機會 (週末模式)</b> 🚨\n\n"
+        f"🚨 <b>USDT 搬磚機會</b> 🚨\n\n"
         f"💎 <b>MAX:</b> {max_p}\n"
-        f"🏦 <b>成本基準:</b> {bank_p:.2f}\n"
+        f"🏦 <b>銀行買入 (基準):</b> {bank_buy:.2f}\n"
+        f"🏦 <b>銀行賣出 (參考):</b> {bank_sell:.2f}\n"
         f"ℹ️ <b>來源:</b> {source_name}\n"
         f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
     )
@@ -195,7 +197,6 @@ def monitor_btc():
         try:
             with open(BTC_HISTORY_FILE, "r") as f:
                 history = json.load(f)
-            print(f"成功讀取歷史資料，共 {len(history)} 筆")
         except:
             history = []
     
