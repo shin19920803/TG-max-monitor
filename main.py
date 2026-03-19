@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 USDT_THRESHOLD = 0.2          
 USDT_CHANGE_THRESHOLD = 0     
 USDT_STATE_FILE = "last_state.txt"
-BANK_SPREAD_FIX = 0.05        # Yahoo 中間價推算銀行買賣價的微調值
+BANK_SPREAD_FIX = 0.12        
 
 # 2. BTC 監控設定 (1%)
 BTC_DROP_THRESHOLD = 0.01     
@@ -47,7 +47,7 @@ def send_telegram_msg(message):
         print(f"⚠️ 發送失敗: {e}")
 
 # ===========================
-# 💰 功能 1: USDT 搬磚監控 (基準：即期買入)
+# 💰 功能 1: USDT 搬磚監控 (含即期買入參考)
 # ===========================
 
 def get_max_usdt_price():
@@ -66,14 +66,12 @@ def get_bot_usd_rate():
         url = "https://rate.bot.com.tw/xrt?Lang=zh-TW"
         dfs = pd.read_html(url)
         df = dfs[0]
-        # 台銀欄位: 0=幣別, 1=現金買入, 2=現金賣出, 3=即期買入, 4=即期賣出
+        # 【修改】抓取第 0(幣別)、3(即期買入)、4(即期賣出) 欄位
         df = df.iloc[:, [0, 3, 4]].copy()
         df.columns = ["Currency", "Spot_Buy", "Spot_Sell"]
         usd_row = df[df["Currency"].str.contains("USD|美金", na=False)]
         if usd_row.empty: return None, None
-        
-        # 【修改點】改為回傳 (買入價, 賣出價)
-        return float(usd_row.iloc[0]["Spot_Buy"]), float(usd_row.iloc[0]["Spot_Sell"])
+        return float(usd_row.iloc[0]["Spot_Sell"]), float(usd_row.iloc[0]["Spot_Buy"])
     except Exception as e:
         print(f"⚠️ 台銀讀取失敗: {e}")
         return None, None
@@ -87,53 +85,52 @@ def get_yahoo_usd_rate():
         
         last_price = data['Close'].iloc[-1]
         
-        # 估算銀行買入價 (銀行買入通常略低於國際中間價)
-        estimated_bank_buy = last_price - BANK_SPREAD_FIX
-        estimated_bank_sell = last_price + BANK_SPREAD_FIX 
-        return estimated_bank_buy, estimated_bank_sell, last_price
+        estimated_bank_sell = last_price + BANK_SPREAD_FIX
+        estimated_bank_buy = last_price - BANK_SPREAD_FIX # 簡單對稱估算買入價
+        return estimated_bank_sell, estimated_bank_buy, last_price
     except Exception as e:
         print(f"❌ Yahoo 財經讀取失敗: {e}")
         return None, None, None
 
 def monitor_usdt():
-    print("--- [1] 執行 USDT 監控 (以即期買入為基準) ---")
+    print("--- [1] 執行 USDT 監控 (週末智慧版 + 買入參考) ---")
     
     tw_time = datetime.utcnow() + timedelta(hours=8)
     weekday = tw_time.weekday() 
     
     max_p = get_max_usdt_price()
-    bank_buy = None
     bank_sell = None
+    bank_buy = None
     source_name = ""
 
     if weekday >= 5: 
-        print(f"📅 檢測到今天是週末，強制切換至 Yahoo 財經推算...")
-        est_buy, est_sell, raw_p = get_yahoo_usd_rate()
-        if est_buy:
-            bank_buy, bank_sell = est_buy, est_sell
+        print(f"📅 檢測到今天是週末 (星期{weekday+1})，強制切換至 Yahoo 財經...")
+        est_sell, est_buy, raw_p = get_yahoo_usd_rate()
+        if est_sell:
+            bank_sell, bank_buy = est_sell, est_buy
             source_name = "Yahoo估算"
     else:
-        # 平日：接收台銀的回傳值 (買入價, 賣出價)
+        # 接收兩個回傳值：賣出價與買入價
         res = get_bot_usd_rate()
         if res and res[0] is not None:
-            bank_buy, bank_sell = res
+            bank_sell, bank_buy = res
             source_name = "臺銀即期"
         else:
             print("⚠️ 台銀讀取失敗，轉用 Yahoo...")
-            est_buy, est_sell, raw_p = get_yahoo_usd_rate()
-            if est_buy:
-                bank_buy, bank_sell = est_buy, est_sell
+            est_sell, est_buy, raw_p = get_yahoo_usd_rate()
+            if est_sell:
+                bank_sell, bank_buy = est_sell, est_buy
                 source_name = "Yahoo估算"
 
-    if max_p is None or bank_buy is None:
+    if max_p is None or bank_sell is None:
         print("❌ 數據不足，跳過本次監控")
         return
 
-    # 【關鍵修改】價差計算改用「銀行買入價」當作成本基準
-    diff = max_p - bank_buy
-    rate = (diff / bank_buy) * 100
+    # 計算價差時，依然使用銀行的「賣出價」作為你的成本基準
+    diff = max_p - bank_sell
+    rate = (diff / bank_sell) * 100
     
-    print(f"MAX: {max_p}, 買入基準: {bank_buy:.2f} ({source_name}), 價差: {diff:.2f}")
+    print(f"MAX: {max_p}, 賣出成本: {bank_sell:.2f}, 買入參考: {bank_buy:.2f} ({source_name}), 價差: {diff:.2f}")
 
     last_diff = 0.0
     if os.path.exists(USDT_STATE_FILE):
@@ -158,8 +155,8 @@ def monitor_usdt():
     msg = (
         f"🚨 <b>USDT 搬磚機會</b> 🚨\n\n"
         f"💎 <b>MAX:</b> {max_p}\n"
-        f"🏦 <b>銀行買入 (基準):</b> {bank_buy:.2f}\n"
-        f"🏦 <b>銀行賣出 (參考):</b> {bank_sell:.2f}\n"
+        f"🏦 <b>銀行賣出 (成本):</b> {bank_sell:.2f}\n"
+        f"🏦 <b>銀行買入 (參考):</b> {bank_buy:.2f}\n"
         f"ℹ️ <b>來源:</b> {source_name}\n"
         f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
     )
