@@ -75,10 +75,7 @@ def get_bot_usd_rate() -> Optional[BankRate]:
     從台灣銀行取得美元匯率
     """
     try:
-        dfs = pd.read_html(
-            api_config.bot_rate_url,
-            timeout=api_config.request_timeout
-        )
+        dfs = pd.read_html(api_config.bot_rate_url)
         df = dfs[0]
         
         # 台銀欄位: 0=幣別, 1=現金買入, 2=現金賣出, 3=即期買入, 4=即期賣出
