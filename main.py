@@ -1,234 +1,105 @@
-import requests
-import pandas as pd
-import os
-import json
-import time
-import yfinance as yf
-from datetime import datetime, timedelta
+#!/usr/bin/env python3
+"""
+TG MAX Monitor - 主程式入口
+USDT 搬磚監控 + BTC 暴跌警報
+"""
 
-# ===========================
-# 🟢 設定區
-# ===========================
+import argparse
+import sys
 
-# 1. USDT 監控設定
-USDT_THRESHOLD = 0.2          
-USDT_CHANGE_THRESHOLD = 0     
-USDT_STATE_FILE = "last_state.txt"
-BANK_SPREAD_FIX = 0.05        # Yahoo 中間價推算銀行買賣價的微調值
+from utils.logger import setup_logger, get_logger
+from utils.telegram import send_telegram_msg
+from monitors.usdt_monitor import USDTMonitor
+from monitors.btc_monitor import BTCMonitor
 
-# 2. BTC 監控設定 (1%)
-BTC_DROP_THRESHOLD = 0.01     
-BTC_TIME_WINDOW = 3600
-BTC_HISTORY_FILE = "btc_history.json"
 
-# ===========================
-# 🛠 工具函式
-# ===========================
-
-def send_telegram_msg(message):
-    token = os.environ.get("TG_TOKEN", "").replace(" ", "").replace("\n", "").strip()
-    chat_id = os.environ.get("TG_CHAT_ID", "").replace(" ", "").replace("\n", "").strip()
-    
-    if not token or not chat_id:
-        print("❌ 錯誤：找不到 Token 或 Chat ID")
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    payload = {
-        "chat_id": chat_id,
-        "text": message,
-        "parse_mode": "HTML"
-    }
-    
-    try:
-        requests.post(url, json=payload, timeout=10)
-        print("✅ Telegram 通知已發送")
-    except Exception as e:
-        print(f"⚠️ 發送失敗: {e}")
-
-# ===========================
-# 💰 功能 1: USDT 搬磚監控 (基準：即期賣出)
-# ===========================
-
-def get_max_usdt_price():
-    try:
-        url = "https://max-api.maicoin.com/api/v2/tickers/usdttwd"
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        return float(data['last'])
-    except Exception as e:
-        print(f"❌ MAX USDT 讀取失敗: {e}")
-        return None
-
-def get_bot_usd_rate():
-    try:
-        url = "https://rate.bot.com.tw/xrt?Lang=zh-TW"
-        dfs = pd.read_html(url)
-        df = dfs[0]
-        # 台銀欄位: 0=幣別, 1=現金買入, 2=現金賣出, 3=即期買入, 4=即期賣出
-        df = df.iloc[:, [0, 3, 4]].copy()
-        df.columns = ["Currency", "Spot_Buy", "Spot_Sell"]
-        usd_row = df[df["Currency"].str.contains("USD|美金", na=False)]
-        if usd_row.empty: return None, None
-        
-        # 回傳 (買入價, 賣出價)
-        return float(usd_row.iloc[0]["Spot_Buy"]), float(usd_row.iloc[0]["Spot_Sell"])
-    except Exception as e:
-        print(f"⚠️ 台銀讀取失敗: {e}")
-        return None, None
-
-def get_yahoo_usd_rate():
-    try:
-        ticker = yf.Ticker("TWD=X")
-        data = ticker.history(period="1d", interval="1m")
-        if data.empty:
-            data = ticker.history(period="1d")
-        
-        last_price = data['Close'].iloc[-1]
-        
-        # 估算銀行買入與賣出價
-        estimated_bank_buy = last_price - BANK_SPREAD_FIX
-        estimated_bank_sell = last_price + BANK_SPREAD_FIX 
-        return estimated_bank_buy, estimated_bank_sell, last_price
-    except Exception as e:
-        print(f"❌ Yahoo 財經讀取失敗: {e}")
-        return None, None, None
-
-def monitor_usdt():
-    print("--- [1] 執行 USDT 監控 (以即期賣出為基準) ---")
-    
-    tw_time = datetime.utcnow() + timedelta(hours=8)
-    weekday = tw_time.weekday() 
-    
-    max_p = get_max_usdt_price()
-    bank_buy = None
-    bank_sell = None
-    source_name = ""
-
-    if weekday >= 5: 
-        print(f"📅 檢測到今天是週末，強制切換至 Yahoo 財經推算...")
-        est_buy, est_sell, raw_p = get_yahoo_usd_rate()
-        if est_sell:
-            bank_buy, bank_sell = est_buy, est_sell
-            source_name = "Yahoo估算"
-    else:
-        # 平日：接收台銀的回傳值 (買入價, 賣出價)
-        res = get_bot_usd_rate()
-        if res and res[1] is not None:
-            bank_buy, bank_sell = res
-            source_name = "臺銀即期"
-        else:
-            print("⚠️ 台銀讀取失敗，轉用 Yahoo...")
-            est_buy, est_sell, raw_p = get_yahoo_usd_rate()
-            if est_sell:
-                bank_buy, bank_sell = est_buy, est_sell
-                source_name = "Yahoo估算"
-
-    if max_p is None or bank_sell is None:
-        print("❌ 數據不足，跳過本次監控")
-        return
-
-    # 【關鍵修改】價差計算改回用「銀行賣出價」當作成本基準
-    diff = max_p - bank_sell
-    rate = (diff / bank_sell) * 100
-    
-    print(f"MAX: {max_p}, 賣出基準: {bank_sell:.2f} ({source_name}), 價差: {diff:.2f}")
-
-    last_diff = 0.0
-    if os.path.exists(USDT_STATE_FILE):
-        try:
-            with open(USDT_STATE_FILE, "r") as f:
-                last_diff = float(f.read().strip())
-        except:
-            pass
-
-    with open(USDT_STATE_FILE, "w") as f:
-        f.write(str(diff))
-
-    if diff < USDT_THRESHOLD:
-        print(f"未達 {USDT_THRESHOLD} 門檻")
-        return
-
-    change = abs(diff - last_diff)
-    if change <= USDT_CHANGE_THRESHOLD and last_diff >= USDT_THRESHOLD:
-        print(f"變動幅度 {change:.3f} 過小，跳過通知")
-        return
-
-    msg = (
-        f"🚨 <b>USDT 搬磚機會</b> 🚨\n\n"
-        f"💎 <b>MAX:</b> {max_p}\n"
-        f"🏦 <b>銀行賣出 (成本/基準):</b> {bank_sell:.2f}\n"
-        f"🏦 <b>銀行買入 (參考):</b> {bank_buy:.2f}\n"
-        f"ℹ️ <b>來源:</b> {source_name}\n"
-        f"💰 <b>溢價:</b> {diff:.2f} ({rate:.2f}%)"
+def parse_args():
+    """解析命令列參數"""
+    parser = argparse.ArgumentParser(
+        description="TG MAX Monitor - USDT 搬磚監控 + BTC 暴跌警報"
     )
-    send_telegram_msg(msg)
-
-# ===========================
-# 📉 功能 2: BTC/USDT 暴跌監控 (1%)
-# ===========================
-
-def get_btc_price():
-    try:
-        url = "https://max-api.maicoin.com/api/v2/tickers/btcusdt" 
-        headers = {"User-Agent": "Mozilla/5.0"}
-        res = requests.get(url, headers=headers, timeout=10)
-        data = res.json()
-        return float(data['last'])
-    except Exception as e:
-        print(f"❌ BTC 讀取失敗: {e}")
-        return None
-
-def monitor_btc():
-    print("\n--- [2] 執行 BTC/USDT 暴跌監控 (門檻 1%) ---")
+    parser.add_argument("--usdt", action="store_true", help="只執行 USDT 監控")
+    parser.add_argument("--btc", action="store_true", help="只執行 BTC 監控")
+    parser.add_argument("--test", action="store_true", help="測試模式")
+    parser.add_argument("--verbose", "-v", action="store_true", help="顯示詳細日誌")
     
-    current_time_str = (datetime.utcnow() + timedelta(hours=8)).strftime('%Y-%m-%d %H:%M:%S')
-    print(f"執行時間 (台灣): {current_time_str}")
+    return parser.parse_args()
 
-    current_price = get_btc_price()
-    if current_price is None:
+
+def test_mode(logger):
+    """測試模式：發送測試訊息"""
+    logger.info("🧪 進入測試模式")
+    
+    test_msg = (
+        "🧪 <b>TG MAX Monitor 測試訊息</b> 🧪\n\n"
+        "✅ Telegram 連線正常\n"
+        "✅ 機器人設定完成\n\n"
+        "如果你看到這則訊息，代表一切設定正確！"
+    )
+    
+    success = send_telegram_msg(test_msg)
+    
+    if success:
+        logger.info("✅ 測試訊息發送成功！")
+    else:
+        logger.error("❌ 測試訊息發送失敗")
+        sys.exit(1)
+
+
+def main():
+    """主程式"""
+    args = parse_args()
+    
+    # 設定日誌
+    import logging
+    level = logging.DEBUG if args.verbose else logging.INFO
+    setup_logger(level=level)
+    logger = get_logger("tg_monitor")
+    
+    logger.info("=" * 50)
+    logger.info("🚀 TG MAX Monitor 啟動")
+    logger.info("=" * 50)
+    
+    # 測試模式
+    if args.test:
+        test_mode(logger)
         return
-
-    now = time.time()
-    history = []
-
-    if os.path.exists(BTC_HISTORY_FILE):
+    
+    # 決定執行哪些監控
+    run_usdt = args.usdt or (not args.usdt and not args.btc)
+    run_btc = args.btc or (not args.usdt and not args.btc)
+    
+    success = True
+    
+    # 執行 USDT 監控
+    if run_usdt:
         try:
-            with open(BTC_HISTORY_FILE, "r") as f:
-                history = json.load(f)
-        except:
-            history = []
+            usdt_monitor = USDTMonitor()
+            if not usdt_monitor.run():
+                success = False
+        except Exception as e:
+            logger.error(f"USDT 監控發生錯誤: {e}")
+            success = False
     
-    history = [x for x in history if x[0] > (now - BTC_TIME_WINDOW)]
-    history.append([now, current_price])
-
-    with open(BTC_HISTORY_FILE, "w") as f:
-        json.dump(history, f)
-
-    if not history:
-        max_price_1h = current_price
-    else:
-        max_price_1h = max(x[1] for x in history)
+    # 執行 BTC 監控
+    if run_btc:
+        try:
+            btc_monitor = BTCMonitor()
+            if not btc_monitor.run():
+                success = False
+        except Exception as e:
+            logger.error(f"BTC 監控發生錯誤: {e}")
+            success = False
     
-    drop_rate = (max_price_1h - current_price) / max_price_1h
-
-    print(f"目前 BTC: {current_price} USDT")
-    print(f"1H內最高: {max_price_1h} USDT")
-    print(f"跌幅: {drop_rate*100:.2f}% (門檻: {BTC_DROP_THRESHOLD*100}%)")
-
-    if drop_rate >= BTC_DROP_THRESHOLD:
-        msg = (
-            f"📉 <b>BTC/USDT 急跌警報</b> 📉\n\n"
-            f"🔻 <b>1H內跌幅:</b> {drop_rate*100:.2f}%\n"
-            f"💵 <b>目前價格:</b> {current_price:,.2f} USDT\n"
-            f"🏔 <b>1H內最高:</b> {max_price_1h:,.2f} USDT\n"
-            f"⏰ <b>時間:</b> {current_time_str}"
-        )
-        send_telegram_msg(msg)
+    logger.info("=" * 50)
+    if success:
+        logger.info("✅ 監控完成")
     else:
-        print("未達暴跌門檻，安全。")
+        logger.warning("⚠️ 部分監控失敗")
+    logger.info("=" * 50)
+    
+    sys.exit(0 if success else 1)
+
 
 if __name__ == "__main__":
-    monitor_usdt()
-    monitor_btc()
+    main()
