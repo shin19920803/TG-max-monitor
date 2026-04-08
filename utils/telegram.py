@@ -97,4 +97,19 @@ def send_usdt_alert(
 
 
 def send_btc_alert(
-    drop
+    drop_rate: float,
+    current_price: float,
+    max_price_1h: float,
+    time_str: str
+) -> bool:
+    """
+    發送 BTC 暴跌警報
+    """
+    msg = (
+        f"📉 <b>BTC/USDT 急跌警報</b> 📉\n\n"
+        f"🔻 <b>1H內跌幅:</b> {drop_rate*100:.2f}%\n"
+        f"💵 <b>目前價格:</b> {current_price:,.2f} USDT\n"
+        f"🏔 <b>1H內最高:</b> {max_price_1h:,.2f} USDT\n"
+        f"⏰ <b>時間:</b> {time_str}"
+    )
+    return send_telegram_msg(msg)
